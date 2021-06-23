@@ -15,9 +15,9 @@ import numpy as np
 CLASS_COUNT = 14
 IS_TRAINED = False
 TOL = 1e-4
-ITER = 2
-EARLY_STOP = 1
-PRUNE_STOP = 2
+ITER = 20
+EARLY_STOP = 10
+PRUNE_STOP = ITER
 best_prune_acc = 0
 prune_count = 0
 
@@ -92,8 +92,8 @@ def prune():
 
     model = DenseNet121(classCount=CLASS_COUNT, isTrained=IS_TRAINED)
     model = nn.DataParallel(model).cuda()
-    batchSize = 2
-    maxEpoch = 3
+    batchSize = 200
+    maxEpoch = 10
 
     # ---- Parameters related to image transforms: size of the down-scaled image, cropped image
     imgtransResize = 320
@@ -162,7 +162,7 @@ def prune():
         # Unstructured pruning
         p.l1_unstructured(model.module.densenet121.features.denseblock1.denselayer1.conv2, "weight", amount=0.3)
 
-        print(model.module.densenet121.features.denseblock1.denselayer1.conv2.weight_mask.sum())
+        # print(model.module.densenet121.features.denseblock1.denselayer1.conv2.weight_mask.sum())
 
         # Structured pruning
         # model.module.densenet121.features.denseblock1.denselayer1.conv2 = p.ln_structured(
@@ -175,7 +175,14 @@ def prune():
 
     test_predictions = (test_logits >= 0.5) * 1
 
+    timestampTime = time.strftime("%H%M%S")
+    timestampDate = time.strftime("%d%m%Y")
+    timestampSTART = timestampDate + '-' + timestampTime
+
     print(multilabel_confusion_matrix(y_true=test_targets, y_pred=test_predictions))
+
+    torch.save({'state_dict': model.state_dict(), 'best_loss': lossMIN,
+                'optimizer': optimizer.state_dict()}, f'./saved_models/chexnet_prune_{timestampSTART}.pth.tar')
 
 
 def accuracy(output, target):
