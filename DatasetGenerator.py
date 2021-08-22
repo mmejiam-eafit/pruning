@@ -1,10 +1,10 @@
 import os
-from PIL import Image
+from PIL import Image, ImageFile
 
 import torch
 from torch.utils.data import Dataset
 
-
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 # --------------------------------------------------------------------------------
 
 class DatasetGenerator(Dataset):

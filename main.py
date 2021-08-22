@@ -7,36 +7,64 @@ from DatasetGenerator import DatasetGenerator
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.optim as optim
 import torch.nn.utils.prune as p
-from sklearn.metrics import multilabel_confusion_matrix, classification_report, roc_auc_score
+from sklearn.metrics import multilabel_confusion_matrix
 from AverageMeter import AverageMeter
 import matplotlib.pyplot as plt
 import numpy as np
+import time
+from random import randrange, randint
+from os import path
+from torchmetrics import AUROC
+from collections import OrderedDict
 
 CLASS_COUNT = 14
 IS_TRAINED = False
 TOL = 1e-4
-ITER = 20
-EARLY_STOP = 10
-PRUNE_STOP = ITER
-best_prune_acc = 0
-prune_count = 0
+ITER = 10
+EARLY_STOP = 5
+PRUNE_STOP = 5
+BATCH_SIZE = 8
+BATCH_MARKER = 107
+MAX_EPOCH = 10
+# ---- Parameters related to image transforms: size of the down-scaled image, cropped image
+IMG_TRANS_RESIZE = 320
+IMG_TRANS_CROP = 299
 
+SAVE_PATH = './saved_models/'
 IMG_DIR = "./database"
 TRAIN_FILE = "./dataset/train_2.txt"
 VAL_FILE = "./dataset/val_2.txt"
-TEST_FILE = "./dataset/test_2.txt"
+TEST_FILE = "./dataset/test_1.txt"
+CURR_DATE = time.strftime("%d%m%Y")
+CURR_TIME = time.strftime("%H%M%S")
+MODEL_NAME = f"chexnet_prune_{CURR_DATE}_{CURR_TIME}"
 
 CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia',
                'Pneumothorax', 'Consolidation', 'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening',
                'Hernia']
 
 
-def getDataLoader(batchSize, transformSequence, file):
-    dataSet = DatasetGenerator(imgDir=IMG_DIR, transform=transformSequence, datasetFile=file)
-    dataLoader = DataLoader(dataset=dataSet, batch_size=batchSize, shuffle=True, num_workers=0,
-                            pin_memory=True)
+def getTime(finish, start=0):
+    total = round(finish - start)
 
-    return dataLoader
+    secs = total % 60
+    total -= secs
+    total = round(total / 60)
+
+    mins = total % 60
+    total -= mins
+
+    hours = round(total / 60) if total > 60 else 0
+
+    return hours, mins, secs
+
+
+def getDataLoader(batchSize, transformSequence, file):
+    data_set = DatasetGenerator(imgDir=IMG_DIR, transform=transformSequence, datasetFile=file)
+    data_loader = DataLoader(dataset=data_set, batch_size=batchSize, shuffle=True, num_workers=0,
+                             pin_memory=True)
+
+    return data_loader
 
 
 def getTrainValDataLoaders(transCrop, batchSize):
@@ -47,27 +75,28 @@ def getTrainValDataLoaders(transCrop, batchSize):
     return trainDataLoader, valDataLoader
 
 
-def getTestDataLoader(transResize, transCrop, batchSize):
-    transforms = getTestTransforms(transResize, transCrop)
+def getTestDataLoader(trans_resize, trans_crop, batch_size):
+    transforms = getTestTransforms(trans_resize, trans_crop)
 
-    return getDataLoader(batchSize, transforms, TEST_FILE)
+    return getDataLoader(batch_size, transforms, TEST_FILE)
 
 
-def getTrainTransforms(transCrop):
+def getTrainTransforms(trans_crop):
     normalize = transforms.Normalize([0.52, 0.52, 0.52], [0.23, 0.23, 0.23])
 
-    transformList = []
+    transform_list = [
+        transforms.RandomResizedCrop(trans_crop),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        normalize
+    ]
 
-    transformList.append(transforms.RandomResizedCrop(transCrop))
-    transformList.append(transforms.RandomHorizontalFlip())
-    transformList.append(transforms.ToTensor())
-    transformList.append(normalize)
-    transformSequence = transforms.Compose(transformList)
+    transform_sequence = transforms.Compose(transform_list)
 
-    return transformSequence
+    return transform_sequence
 
 
-def getTestTransforms(transResize, transCrop):
+def getTestTransforms(trans_resize, trans_crop):
     normalize = transforms.Normalize([0.52, 0.52, 0.52], [0.23, 0.23, 0.23])
 
     def toTensor(crops):
@@ -76,38 +105,69 @@ def getTestTransforms(transResize, transCrop):
     def normal(crops):
         return torch.stack([normalize(crop) for crop in crops])
 
-    transformList = []
-    transformList.append(transforms.Resize(transResize))
-    transformList.append(transforms.TenCrop(transCrop))
-    transformList.append(transforms.Lambda(toTensor))
-    transformList.append(transforms.Lambda(normal))
-    transformSequence = transforms.Compose(transformList)
+    transform_list = [
+        transforms.Resize(trans_resize),
+        transforms.TenCrop(trans_crop),
+        transforms.Lambda(toTensor),
+        transforms.Lambda(normal)
+    ]
+    transform_sequence = transforms.Compose(transform_list)
 
-    return transformSequence
+    return transform_sequence
 
 
 def prune():
-    global prune_count
-    global best_prune_acc
+    best_prune_acc = 0
+    prune_count = 0
+
+    start_time = time.time()
 
     model = DenseNet121(classCount=CLASS_COUNT, isTrained=IS_TRAINED)
     model = nn.DataParallel(model).cuda()
-    batchSize = 200
-    maxEpoch = 10
 
-    # ---- Parameters related to image transforms: size of the down-scaled image, cropped image
-    imgtransResize = 320
-    imgtransCrop = 299
+    modules_d1 = [
+        model.module.densenet121.features.denseblock1.denselayer1.conv2,
+        model.module.densenet121.features.denseblock1.denselayer2.conv2,
+        model.module.densenet121.features.denseblock1.denselayer3.conv2,
+        model.module.densenet121.features.denseblock1.denselayer4.conv2,
+        model.module.densenet121.features.denseblock1.denselayer5.conv2,
+        model.module.densenet121.features.denseblock1.denselayer6.conv2,
+    ]
 
-    trainDataLoader, valDataLoader = getTrainValDataLoaders(transCrop=imgtransCrop, batchSize=batchSize)
-    testDataLoader = getTestDataLoader(transResize=imgtransResize, transCrop=imgtransCrop, batchSize=batchSize)
+    modules_d3 = [
+        model.module.densenet121.features.denseblock3.denselayer2.conv2,
+        model.module.densenet121.features.denseblock3.denselayer4.conv2,
+        model.module.densenet121.features.denseblock3.denselayer6.conv2,
+        model.module.densenet121.features.denseblock3.denselayer8.conv2,
+        model.module.densenet121.features.denseblock3.denselayer10.conv2,
+        model.module.densenet121.features.denseblock3.denselayer12.conv2,
+        model.module.densenet121.features.denseblock3.denselayer14.conv2,
+        model.module.densenet121.features.denseblock3.denselayer16.conv2,
+        model.module.densenet121.features.denseblock3.denselayer18.conv2,
+        model.module.densenet121.features.denseblock3.denselayer20.conv2,
+        model.module.densenet121.features.denseblock3.denselayer22.conv2,
+        model.module.densenet121.features.denseblock3.denselayer24.conv2,
+    ]
+
+    train_data_loader, val_data_loader = getTrainValDataLoaders(transCrop=IMG_TRANS_CROP, batchSize=BATCH_SIZE)
+    test_data_loader = getTestDataLoader(trans_resize=IMG_TRANS_RESIZE, trans_crop=IMG_TRANS_CROP,
+                                         batch_size=BATCH_SIZE)
 
     # Pruning cycle
     for k in range(0, ITER):
+        print(f"============= Pruning cycle #{k + 1} =============")
 
         if prune_count > PRUNE_STOP:
             print(f'Early Stop finish pruning in iteration {prune_count} with avg val acc: {best_acc}')
             break
+
+        def reset_params(mod):
+            print("Resetting model parameters...")
+            for layer in mod.modules():
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+
+        reset_params(model.module.densenet121)
 
         # -------------------- SETTINGS: OPTIMIZER & SCHEDULER
         optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-5)
@@ -124,12 +184,18 @@ def prune():
         val_acc = 0
         best_acc = 0
 
-        for epoch in range(1, maxEpoch + 1):
+        for epoch in range(1, MAX_EPOCH + 1):
+            print(f"Running epoch {epoch}")
             if epochs_no_improve > EARLY_STOP:
                 print(f'Early Stop finish training in epoch {epoch} with avg val acc: {val_acc}')
                 break
-            t_loss, t_acc = getModelLossInfo(model, trainDataLoader, optimizer, loss, True)
-            v_loss, v_acc = getModelLossInfo(model, valDataLoader, None, loss, False)
+            t_loss, t_acc = getModelLossInfo(model, train_data_loader, optimizer, loss, True)
+
+            # Clean up residual memory before evaluating
+            torch.cuda.empty_cache()
+
+            print(f"Start validation process")
+            v_loss, v_acc = getModelLossInfo(model, val_data_loader, None, loss, False)
             val_acc = v_acc.avg
             is_best = val_acc > best_acc
             best_acc = max(best_acc, val_acc)
@@ -139,50 +205,65 @@ def prune():
                 epochs_no_improve += 1
             else:
                 epochs_no_improve = 0
+
+            print(f"Statistics: \n Train Loss: {t_loss.avg} \n Train Acc: {t_acc.avg} \n Val Loss: {v_loss.avg} \n "
+                  f"Val Acc: {v_acc.avg}")
+            plot_training_stats(t_loss.items, t_acc.items, v_loss.items, v_acc.items)
+
             train_loss.append(t_loss.avg)
             train_acc.append(t_acc.avg)
             val_loss.append(v_loss.avg)
             val_accuracies.append(v_acc.avg)
 
-        plot_training_stats(train_loss, train_acc, val_loss, val_accuracies)
+            del t_acc, t_loss, v_acc, v_loss
 
-        test_loss, test_acc = test(model, testDataLoader)
+        plot_training_stats(train_loss, train_acc, val_loss, val_accuracies, is_average=True)
 
-        testMean = np.array(test_acc).mean()
+        print("Testing Model")
 
+        test_loss, test_acc = test(model, test_data_loader)
 
-        is_best_prune = testMean > best_prune_acc
-        best_prune_acc = max(best_prune_acc, testMean)
+        test_mean = np.array(test_acc).mean()
 
+        is_best_prune = test_mean > best_prune_acc
+        best_prune_acc = max(best_prune_acc, test_mean)
+
+        # Count how many times we've been getting worse results
         if not is_best_prune:
             prune_count += 1
         else:
             prune_count = 0
 
+        # Coinflip to determine which module to take
+        if randint(0, 1) == 1:
+            use_list = modules_d1
+        else:
+            use_list = modules_d3
+
+        # Select a random layer from the list to be used
+        rand_idx = randrange(len(use_list) - 1)
+
         # Unstructured pruning
-        p.l1_unstructured(model.module.densenet121.features.denseblock1.denselayer1.conv2, "weight", amount=0.3)
+        p.l1_unstructured(use_list[rand_idx], "weight", amount=0.3)
+        p.remove(use_list[rand_idx], "weight")
 
-        # print(model.module.densenet121.features.denseblock1.denselayer1.conv2.weight_mask.sum())
+        # Clean up residual memory before starting over
+        torch.cuda.empty_cache()
 
-        # Structured pruning
-        # model.module.densenet121.features.denseblock1.denselayer1.conv2 = p.ln_structured(
-        #     model.module.densenet121.features.denseblock1.denselayer1.conv2,"weight", amount=0.3, n=1, dim=0)
-
-    for i,name in model.module.densenet121.features.denseblock1.denselayer1.conv2.named_parameters():
-        print(f"{i} = {name.size()}")
-
-    test_targets, test_logits = test(model, testDataLoader)
-
+    print("============= Testing Pruned Model =============")
+    test_targets, test_logits = test(model, test_data_loader)
     test_predictions = (test_logits >= 0.5) * 1
-
-    timestampTime = time.strftime("%H%M%S")
-    timestampDate = time.strftime("%d%m%Y")
-    timestampSTART = timestampDate + '-' + timestampTime
 
     print(multilabel_confusion_matrix(y_true=test_targets, y_pred=test_predictions))
 
-    torch.save({'state_dict': model.state_dict(), 'best_loss': lossMIN,
-                'optimizer': optimizer.state_dict()}, f'./saved_models/chexnet_prune_{timestampSTART}.pth.tar')
+    finish_time = time.time()
+
+    hours, mins, secs = getTime(finish_time, start_time)
+
+    print(f"Finished pruning in {hours:02d}:{mins:02d}:{secs:02d}")
+
+    torch.save({'state_dict': model.state_dict(), 'best_loss': np.array(train_loss).mean(),
+                'optimizer': optimizer.state_dict()}, path.join(SAVE_PATH, f'{MODEL_NAME}.pth.tar'))
 
 
 def accuracy(output, target):
@@ -195,38 +276,46 @@ def accuracy(output, target):
     return acc
 
 
-def getModelLossInfo(model, dataLoader, optimizer, loss, isTrain):
+def getModelLossInfo(model, data_loader, optimizer, loss, is_train):
     losses = AverageMeter()
     top_acc = AverageMeter()
 
-    if isTrain:
+    if is_train:
         model.train()
     else:
         model.eval()
 
-    for batchId, (input, target) in enumerate(dataLoader):
+    for batchId, (input, target) in enumerate(data_loader):
+        # Add a marker for batches run, as a rough estimate of where the model is looking at a given time
+        if batchId % BATCH_MARKER == 0:
+            print(f"Processing batch {batchId}")
         input, target = input.cuda(non_blocking=True), target.cuda(non_blocking=True)
         output = model(input)
-        lossVal = loss(output, target)
+        loss_val = loss(output, target)
 
         acc = accuracy(output, target)  # , topk=(1, 1))
-        losses.update(lossVal.item(), input.size(0))
+        losses.update(loss_val.item(), input.size(0))
         top_acc.update(acc.item(), input.size(0))
 
-        if isTrain:
+        if is_train:
             optimizer.zero_grad()
-            lossVal.backward()
+            loss_val.backward()
             optimizer.step()
+
+        # Explicit cleanup of variables
+        del output
 
     return losses, top_acc
 
 
-def test(model, dataLoader):
+def test(model, data_loader):
     model.eval()
     targets = torch.autograd.Variable().cuda()
     predictions = torch.autograd.Variable().cuda()
     with torch.no_grad():
-        for i, (input, target) in enumerate(dataLoader):
+        for i, (input, target) in enumerate(data_loader):
+            if i % BATCH_MARKER == 0:
+                print(f"Testing batch {i}")
             input, target = input.cuda(), target.cuda()
             targets = torch.cat((targets, target), 0)
             bs, n_crops, c, h, w = input.size()
@@ -235,24 +324,44 @@ def test(model, dataLoader):
             outMean = out.view(bs, n_crops, -1).mean(1)
 
             predictions = torch.cat((predictions, outMean.data), 0)
-    targets = targets.cpu().numpy()
-    predictions = predictions.cpu().numpy()
 
     computeAUROC(targets, predictions)
-    return targets, predictions
+    return targets.cpu().numpy(), predictions.cpu().numpy()
 
 
 def computeAUROC(target, prediction):
-    aurocs = np.array(list(map(roc_auc_score, target[:CLASS_COUNT, :], prediction[:CLASS_COUNT, :])))
-    aurocMean = aurocs.mean()
+    """
+    Get the AUROC for all classes, and calculate individual AUROC.
+    Individual AUROC is calculated as a 1 vs all evaluation, where it checks
+    for each class when it was correctly evaulated and when it was not.
+    """
+    # aurocs = np.array(list(map(roc_auc_score, target, prediction[:CLASS_COUNT, :])))
+    target = target.int()
+    macro_auroc_evaluator = AUROC(num_classes=CLASS_COUNT, average='macro', pos_label=1)
+    weighted_auroc_evaluator = AUROC(num_classes=CLASS_COUNT, average='weighted', pos_label=1)
 
-    print(f"AUROC mean = {aurocMean}")
-    # print(f"Individual AUROCs: ")
-    # print_func = lambda className, auroc: print(f"CLASS: {className}, AUROC: {auroc}")
-    # map(print_func, CLASS_NAMES, aurocs)
+    macro_auroc = macro_auroc_evaluator(prediction, target)
+    weighted_auroc = weighted_auroc_evaluator(prediction, target)
+
+    del macro_auroc_evaluator, weighted_auroc_evaluator
+
+    print(f"MACRO AUROC = {macro_auroc}")
+    print(f"WEIGHTED AUROC = {weighted_auroc}")
+    print(f"Individual AUROCs: ")
+    class_aurocs = OrderedDict()
+
+    for i in range(CLASS_COUNT):
+        auroc_evaluator = AUROC(num_classes=None, average='macro', pos_label=1)
+        class_aurocs[CLASS_NAMES[i]] = auroc_evaluator(prediction[:, i], target[:, i])
+        del auroc_evaluator
+
+    for name, value in class_aurocs.items():
+        print(f"CLASS: {name}, AUROC: {value}")
 
 
-def plot_training_stats(t_loss, t_acc, v_loss, v_acc):
+def plot_training_stats(t_loss, t_acc, v_loss, v_acc, is_average=False):
+    curr_date = time.strftime("%d%m%Y")
+    curr_time = time.strftime("%H%M%S")
     plt.figure()
     plt.plot(t_loss)
     plt.plot([acc / 100 for acc in t_acc])
@@ -261,9 +370,12 @@ def plot_training_stats(t_loss, t_acc, v_loss, v_acc):
     plt.title(f'DenseNet modified model statistics')
     plt.ylabel('loss - acc')
     plt.xlabel('epoch')
-    plt.legend(['T loss', 'T acc', 'V loss', 'V_acc'], loc='upper left')
-    # plt.savefig(os.path.join(SAVE_PATH, f'{MODEL_NAME}_plot.png'))
-    plt.show()
+    plt.legend(['Train loss', 'Train acc', 'Val loss', 'Val acc'], loc='upper left')
+    if is_average:
+        plt.savefig(path.join(SAVE_PATH, f'{MODEL_NAME}_{curr_date}-{curr_time}_avg_plot.png'))
+    else:
+        plt.savefig(path.join(SAVE_PATH, f'{MODEL_NAME}_{curr_date}-{curr_time}_plot.png'))
+    # plt.show()
 
 
 if __name__ == '__main__':
