@@ -19,6 +19,7 @@ from collections import OrderedDict
 
 CLASS_COUNT = 14
 IS_TRAINED = False
+PRUNE_AMOUNT = 0.3
 TOL = 1e-4
 ITER = 10
 EARLY_STOP = 5
@@ -32,8 +33,8 @@ IMG_TRANS_CROP = 299
 
 SAVE_PATH = './saved_models/'
 IMG_DIR = "./database"
-TRAIN_FILE = "./dataset/train_2.txt"
-VAL_FILE = "./dataset/val_2.txt"
+TRAIN_FILE = "./dataset/train_1.txt"
+VAL_FILE = "./dataset/val_1.txt"
 TEST_FILE = "./dataset/test_1.txt"
 CURR_DATE = time.strftime("%d%m%Y")
 CURR_TIME = time.strftime("%H%M%S")
@@ -116,7 +117,7 @@ def getTestTransforms(trans_resize, trans_crop):
     return transform_sequence
 
 
-def prune():
+def prune(is_global=False):
     best_prune_acc = 0
     prune_count = 0
 
@@ -208,7 +209,6 @@ def prune():
 
             print(f"Statistics: \n Train Loss: {t_loss.avg} \n Train Acc: {t_acc.avg} \n Val Loss: {v_loss.avg} \n "
                   f"Val Acc: {v_acc.avg}")
-            plot_training_stats(t_loss.items, t_acc.items, v_loss.items, v_acc.items)
 
             train_loss.append(t_loss.avg)
             train_acc.append(t_acc.avg)
@@ -217,7 +217,7 @@ def prune():
 
             del t_acc, t_loss, v_acc, v_loss
 
-        plot_training_stats(train_loss, train_acc, val_loss, val_accuracies, is_average=True)
+        plot_training_stats(train_loss, train_acc, val_loss, val_accuracies)
 
         print("Testing Model")
 
@@ -234,18 +234,31 @@ def prune():
         else:
             prune_count = 0
 
-        # Coinflip to determine which module to take
-        if randint(0, 1) == 1:
-            use_list = modules_d1
+        if is_global:
+            #Do something
+            prune_modules = modules_d1 + modules_d3
+            prune_tuples = []
+
+            for module in prune_modules:
+                prune_tuples.append((module, "weight"))
+
+            p.global_unstructured(parameters=prune_tuples, pruning_method=p.L1Unstructured, amount=PRUNE_AMOUNT)
+
+            for module, param in prune_tuples:
+                p.remove(module, param)
         else:
-            use_list = modules_d3
+            # Coinflip to determine which module to take
+            if randint(0, 1) == 1:
+                use_list = modules_d1
+            else:
+                use_list = modules_d3
 
-        # Select a random layer from the list to be used
-        rand_idx = randrange(len(use_list) - 1)
+            # Select a random layer from the list to be used
+            rand_idx = randrange(len(use_list) - 1)
 
-        # Unstructured pruning
-        p.l1_unstructured(use_list[rand_idx], "weight", amount=0.3)
-        p.remove(use_list[rand_idx], "weight")
+            # Unstructured pruning
+            p.l1_unstructured(use_list[rand_idx], "weight", amount=PRUNE_AMOUNT)
+            p.remove(use_list[rand_idx], "weight")
 
         # Clean up residual memory before starting over
         torch.cuda.empty_cache()
@@ -359,7 +372,7 @@ def computeAUROC(target, prediction):
         print(f"CLASS: {name}, AUROC: {value}")
 
 
-def plot_training_stats(t_loss, t_acc, v_loss, v_acc, is_average=False):
+def plot_training_stats(t_loss, t_acc, v_loss, v_acc):
     curr_date = time.strftime("%d%m%Y")
     curr_time = time.strftime("%H%M%S")
     plt.figure()
@@ -371,12 +384,9 @@ def plot_training_stats(t_loss, t_acc, v_loss, v_acc, is_average=False):
     plt.ylabel('loss - acc')
     plt.xlabel('epoch')
     plt.legend(['Train loss', 'Train acc', 'Val loss', 'Val acc'], loc='upper left')
-    if is_average:
-        plt.savefig(path.join(SAVE_PATH, f'{MODEL_NAME}_{curr_date}-{curr_time}_avg_plot.png'))
-    else:
-        plt.savefig(path.join(SAVE_PATH, f'{MODEL_NAME}_{curr_date}-{curr_time}_plot.png'))
+    plt.savefig(path.join(SAVE_PATH, f'{MODEL_NAME}_{curr_date}-{curr_time}_plot.png'))
     # plt.show()
 
 
 if __name__ == '__main__':
-    prune()
+    prune(is_global=True)
