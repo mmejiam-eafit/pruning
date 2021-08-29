@@ -117,14 +117,18 @@ def getTestTransforms(trans_resize, trans_crop):
     return transform_sequence
 
 
+def getModel():
+    model = DenseNet121(classCount=CLASS_COUNT, isTrained=IS_TRAINED)
+    return nn.DataParallel(model).cuda()
+
+
 def prune(is_global=False):
     best_prune_acc = 0
     prune_count = 0
 
     start_time = time.time()
 
-    model = DenseNet121(classCount=CLASS_COUNT, isTrained=IS_TRAINED)
-    model = nn.DataParallel(model).cuda()
+    model = getModel()
 
     modules_d1 = [
         model.module.densenet121.features.denseblock1.denselayer1.conv2,
@@ -235,13 +239,13 @@ def prune(is_global=False):
             prune_count = 0
 
         if is_global:
-            #Do something
             prune_modules = modules_d1 + modules_d3
             prune_tuples = []
 
             for module in prune_modules:
                 prune_tuples.append((module, "weight"))
-                prune_tuples.append((module, "bias"))
+                if module.bias is not None:
+                    prune_tuples.append((module, "bias"))
 
             p.global_unstructured(parameters=prune_tuples, pruning_method=p.L1Unstructured, amount=PRUNE_AMOUNT)
 
@@ -257,10 +261,15 @@ def prune(is_global=False):
             # Select a random layer from the list to be used
             rand_idx = randrange(len(use_list) - 1)
 
+            has_bias = use_list[rand_idx].bias is not None
+
             # Unstructured pruning
             p.l1_unstructured(use_list[rand_idx], "weight", amount=PRUNE_AMOUNT)
-            p.l1_unstructured(use_list[rand_idx], "bias", amount=PRUNE_AMOUNT)
             p.remove(use_list[rand_idx], "weight")
+
+            if has_bias:
+                p.l1_unstructured(use_list[rand_idx], "bias", amount=PRUNE_AMOUNT)
+                p.remove(use_list[rand_idx], "bias")
 
         # Clean up residual memory before starting over
         torch.cuda.empty_cache()
