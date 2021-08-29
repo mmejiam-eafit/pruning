@@ -241,6 +241,7 @@ def prune(is_global=False):
 
             for module in prune_modules:
                 prune_tuples.append((module, "weight"))
+                prune_tuples.append((module, "bias"))
 
             p.global_unstructured(parameters=prune_tuples, pruning_method=p.L1Unstructured, amount=PRUNE_AMOUNT)
 
@@ -258,6 +259,7 @@ def prune(is_global=False):
 
             # Unstructured pruning
             p.l1_unstructured(use_list[rand_idx], "weight", amount=PRUNE_AMOUNT)
+            p.l1_unstructured(use_list[rand_idx], "bias", amount=PRUNE_AMOUNT)
             p.remove(use_list[rand_idx], "weight")
 
         # Clean up residual memory before starting over
