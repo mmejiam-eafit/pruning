@@ -1,21 +1,29 @@
-from models import DenseNet121
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
-from DatasetGenerator import DatasetGenerator
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import torch.optim as optim
-import torch.nn.utils.prune as p
-from sklearn.metrics import multilabel_confusion_matrix
-from AverageMeter import AverageMeter
+import time
+from collections import OrderedDict
+from os import path
+from random import randrange, randint, seed as random_seed
+
 import matplotlib.pyplot as plt
 import numpy as np
-import time
-from random import randrange, randint
-from os import path
+import torch
+import torch.nn as nn
+import torch.nn.utils.prune as p
+import torch.optim as optim
+import torchvision.transforms as transforms
+from sklearn.metrics import multilabel_confusion_matrix
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader
 from torchmetrics import AUROC
-from collections import OrderedDict
+
+from AverageMeter import AverageMeter
+from DatasetGenerator import DatasetGenerator
+from models import DenseNet121
+
+RANDOM_SEED = 0
+
+torch.manual_seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+random_seed(0)
 
 CLASS_COUNT = 14
 IS_TRAINED = False
@@ -33,9 +41,9 @@ IMG_TRANS_CROP = 299
 
 SAVE_PATH = './saved_models/'
 IMG_DIR = "./database"
-TRAIN_FILE = "./dataset/train_1.txt"
-VAL_FILE = "./dataset/val_1.txt"
-TEST_FILE = "./dataset/test_1.txt"
+TRAIN_FILE = "./dataset/train_2.txt"
+VAL_FILE = "./dataset/val_2.txt"
+TEST_FILE = "./dataset/test_2.txt"
 CURR_DATE = time.strftime("%d%m%Y")
 CURR_TIME = time.strftime("%H%M%S")
 MODEL_NAME = f"chexnet_prune_{CURR_DATE}_{CURR_TIME}"
@@ -43,6 +51,7 @@ MODEL_NAME = f"chexnet_prune_{CURR_DATE}_{CURR_TIME}"
 CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia',
                'Pneumothorax', 'Consolidation', 'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening',
                'Hernia']
+
 
 
 def getTime(finish, start=0):
@@ -61,7 +70,7 @@ def getTime(finish, start=0):
 
 
 def getDataLoader(batchSize, transformSequence, file):
-    data_set = DatasetGenerator(imgDir=IMG_DIR, transform=transformSequence, datasetFile=file)
+    data_set = DatasetGenerator(img_dir=IMG_DIR, transform=transformSequence, dataset_file=file)
     data_loader = DataLoader(dataset=data_set, batch_size=batchSize, shuffle=True, num_workers=0,
                              pin_memory=True)
 
@@ -152,6 +161,18 @@ def prune(is_global=False):
         model.module.densenet121.features.denseblock3.denselayer20.conv2,
         model.module.densenet121.features.denseblock3.denselayer22.conv2,
         model.module.densenet121.features.denseblock3.denselayer24.conv2,
+        model.module.densenet121.features.denseblock3.denselayer1.conv2,
+        model.module.densenet121.features.denseblock3.denselayer3.conv2,
+        model.module.densenet121.features.denseblock3.denselayer5.conv2,
+        model.module.densenet121.features.denseblock3.denselayer7.conv2,
+        model.module.densenet121.features.denseblock3.denselayer9.conv2,
+        model.module.densenet121.features.denseblock3.denselayer11.conv2,
+        model.module.densenet121.features.denseblock3.denselayer13.conv2,
+        model.module.densenet121.features.denseblock3.denselayer15.conv2,
+        model.module.densenet121.features.denseblock3.denselayer17.conv2,
+        model.module.densenet121.features.denseblock3.denselayer19.conv2,
+        model.module.densenet121.features.denseblock3.denselayer21.conv2,
+        model.module.densenet121.features.denseblock3.denselayer23.conv2,
     ]
 
     train_data_loader, val_data_loader = getTrainValDataLoaders(transCrop=IMG_TRANS_CROP, batchSize=BATCH_SIZE)
