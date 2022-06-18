@@ -1,52 +1,66 @@
 import os
-from PIL import Image, ImageFile
+from typing import Tuple
 
 import torch
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset
+from torchvision.transforms import Compose
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-# --------------------------------------------------------------------------------
+
 
 class DatasetGenerator(Dataset):
+    """
 
-    # --------------------------------------------------------------------------------
+    """
 
-    def __init__(self, imgDir, datasetFile, transform):
+    def __init__(self, img_dir: str, dataset_file: str, transform: Compose):
+        """
 
-        self.listImagePaths = []
-        self.listImageLabels = []
-        self.transform = transform
+        :param self:
+        :param img_dir:
+        :param dataset_file:
+        :param transform:
+        :return:
+        """
+        self._list_image_paths = []
+        self._list_image_labels = []
+        self._transform = transform
 
         # ---- Open file, get image paths and labels
 
-        with open(datasetFile, "r") as file:
+        with open(dataset_file, "r") as file:
             for line in file:
-                lineItems = line.split()
+                line_items = line.split()
 
-                imagePath = os.path.join(imgDir, lineItems[0])
-                imageLabel = lineItems[1:]
-                imageLabel = [int(i) for i in imageLabel]
+                image_path = os.path.join(img_dir, line_items[0])
+                image_label = line_items[1:]
+                image_label = [int(i) for i in image_label]
 
-                self.listImagePaths.append(imagePath)
-                self.listImageLabels.append(imageLabel)
+                self._list_image_paths.append(image_path)
+                self._list_image_labels.append(image_label)
 
-    # --------------------------------------------------------------------------------
+    def __getitem__(self, index: int) -> Tuple[Image.Image, torch.FloatTensor]:
+        """
 
-    def __getitem__(self, index):
+        :param self:
+        :param index:
+        :return:
+        """
+        image_path = self._list_image_paths[index]
 
-        imagePath = self.listImagePaths[index]
+        image_data = Image.open(image_path).convert('RGB')
+        image_label = torch.FloatTensor(self._list_image_labels[index])
 
-        imageData = Image.open(imagePath).convert('RGB')
-        imageLabel = torch.FloatTensor(self.listImageLabels[index])
+        if self._transform is not None:
+            image_data = self._transform(image_data)
 
-        if self.transform != None: imageData = self.transform(imageData)
+        return image_data, image_label
 
-        return imageData, imageLabel
+    def __len__(self) -> int:
+        """
 
-    # --------------------------------------------------------------------------------
-
-    def __len__(self):
-
-        return len(self.listImagePaths)
-
-# --------------------------------------------------------------------------------
+        :param self:
+        :return:
+        """
+        return len(self._list_image_paths)
