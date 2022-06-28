@@ -69,5 +69,6 @@ class DataloaderFactory:
         dataset = DatasetGenerator(img_dir=image_dir, transform=transform_sequence, dataset_file=dataset_file)
         data_loader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=True, num_workers=0,
                                  pin_memory=True)
+        data_loader.sampler.data_source
 
         return data_loader

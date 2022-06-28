@@ -27,6 +27,15 @@ class _ModelLossEvaluator(ABC):
         self._top_acc = None
         self._loss = loss
         self.reset_params()
+        self._logger = None
+
+    @property
+    def logger(self):
+        return self._logger
+
+    @logger.setter
+    def logger(self, new_logger):
+        self._logger = new_logger
 
     @property
     def losses(self) -> AverageMeter:
@@ -63,7 +72,7 @@ class _ModelLossEvaluator(ABC):
 
     @abstractmethod
     def run(self, model: nn.Module, data_loader: DataLoader, **kwargs) -> Union[
-        Tuple[AverageMeter, AverageMeter], Tuple[Tensor, Tensor]]:
+            Tuple[AverageMeter, AverageMeter], Tuple[Tensor, Tensor]]:
         """
 
         :param model:
@@ -109,7 +118,8 @@ class TestEvaluator(_ModelLossEvaluator):
                 # Add a marker for batches run, as a rough estimate of where the model is looking at a given time
                 if kwargs.get('batch_marker', None) is not None:
                     if batchId % kwargs.get('batch_marker', None) == 0:
-                        print(f"Testing batch {i}")
+                        if self.logger:
+                            self.logger.info(f"Testing batch {i}")
                 data_input, target = data_input.cuda(), target.cuda()
 
                 if targets is None:
@@ -152,7 +162,8 @@ class ValEvaluator(_ModelLossEvaluator):
             # Add a marker for batches run, as a rough estimate of where the model is looking at a given time
             if kwargs.get('batch_marker', None) is not None:
                 if batchId % kwargs.get('batch_marker', None) == 0:
-                    print(f"Processing batch {batchId}")
+                    if self.logger:
+                        self.logger.info(f"Processing batch {batchId}")
 
             input, target = input.cuda(non_blocking=True), target.cuda(non_blocking=True)
             output = model(input)
@@ -193,7 +204,8 @@ class TrainEvaluator(_ModelLossEvaluator):
             # Add a marker for batches run, as a rough estimate of where the model is looking at a given time
             if kwargs.get('batch_marker', None) is not None:
                 if batchId % kwargs.get('batch_marker', None) == 0:
-                    print(f"Processing batch {batchId}")
+                    if self.logger:
+                        self.logger.info(f"Processing batch {batchId}")
 
             data_input, target = data_input.cuda(non_blocking=True), target.cuda(non_blocking=True)
             output = model(data_input)

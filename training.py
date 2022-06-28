@@ -5,13 +5,14 @@
 #  Last Modified: 1/11/22, 10:51 AM by Miguel Mejía
 from collections import defaultdict
 from os import path
+import os
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import Module
 from torch.nn.modules.loss import _Loss
-from torch.nn.utils.prune import global_unstructured, remove, l1_unstructured
+from torch.nn.utils.prune import global_unstructured, remove, L1Unstructured
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
@@ -36,6 +37,14 @@ class ModelTrainer(object):
     def model(self, new_model):
         self._model = new_model
 
+    @property
+    def logger(self):
+        return self._logger
+
+    @logger.setter
+    def logger(self, new_logger):
+        self._logger = new_logger
+
     def __init__(self, image_dir: str, model: nn.Module, model_name: str, train_dl: DataLoader, val_dl: DataLoader,
                  train_evaluator: _ModelLossEvaluator, val_evaluator: _ModelLossEvaluator):
         """
@@ -57,6 +66,7 @@ class ModelTrainer(object):
         self._val_evaluator = val_evaluator
         self._accuracies = defaultdict(list)
         self._losses = defaultdict(list)
+        self._logger = None
 
     def train(self, **kwargs) -> nn.Module:
         assert 'num_epochs' in kwargs.keys(), "No number of epochs defined"
@@ -70,16 +80,19 @@ class ModelTrainer(object):
 
         epochs_no_improve = 0
         best_acc = 0
+        self._train_evaluator.logger = self.logger
 
         for layer in self.model.children():
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
 
         for epoch in range(kwargs['num_epochs']):
-            print(f"Running epoch {epoch + 1} of {kwargs['num_epochs']}")
+            if self.logger:
+                self.logger.info(f"Running epoch {epoch + 1} of {kwargs['num_epochs']}")
 
             if epochs_no_improve > kwargs['early_stop']:
-                print(f"Early Stop finish training in epoch {epoch} with avg val acc: {self._accuracies['val'][-1]}")
+                if self.logger:
+                    self.logger.warn(f"Early Stop finish training in epoch {epoch} with avg val acc: {self._accuracies['val'][-1]}")
                 break
 
             current_train_loss, current_train_acc = self._train_evaluator.run(model=self.model,
@@ -87,7 +100,8 @@ class ModelTrainer(object):
             # Clean up residual memory before evaluating
             torch.cuda.empty_cache()
 
-            print(f"Start validation process")
+            if self.logger:
+                self.logger.info(f"Start validation process")
             current_val_loss, current_val_acc = self._val_evaluator.run(model=self.model, data_loader=self._val_dl)
             is_best = current_val_loss.avg > best_acc
             best_acc = max(best_acc, current_val_loss.avg)
@@ -100,9 +114,13 @@ class ModelTrainer(object):
             else:
                 epochs_no_improve = 0
 
-            print(
-                f"Statistics: \n Train Loss: {current_train_loss.avg} \n Train Acc: {current_train_acc.avg} \n Val Loss: {current_val_loss.avg} \n "
-                f"Val Acc: {current_val_acc.avg}")
+            if self.logger:
+                self.logger.info(
+                    f"Statistics: "
+                    f"\n Train Loss: {current_train_loss.avg} "
+                    f"\n Train Acc: {current_train_acc.avg} "
+                    f"\n Val Loss: {current_val_loss.avg} "
+                    f"\n Val Acc: {current_val_acc.avg}")
 
             self._losses['train'].append(current_train_loss.avg)
             self._losses['val'].append(current_val_loss.avg)
@@ -120,6 +138,12 @@ class ModelTrainer(object):
         :param save_path:
         :return:
         """
+
+        if not path.exists(save_path):
+            os.makedirs(save_path)
+
+        if self.logger:
+            self.logger.info(f"Saving model at {save_path}")
         torch.save({'state_dict': self._model.state_dict(), 'best_loss': np.array(self._losses['val']).mean(),
                     'optimizer': optimizer.state_dict()}, path.join(save_path, self._model_name))
 
@@ -128,7 +152,7 @@ class BaseModelPruner(ModelTrainer):
 
     def __init__(self, image_dir: str, model: nn.Module, model_name: str, train_dl: DataLoader, val_dl: DataLoader,
                  train_evaluator: _ModelLossEvaluator, val_evaluator: _ModelLossEvaluator):
-        super(BaseModelPruner).__init__(image_dir, model, model_name, train_dl, val_dl, train_evaluator, val_evaluator)
+        super(BaseModelPruner, self).__init__(image_dir, model, model_name, train_dl, val_dl, train_evaluator, val_evaluator)
         self._keep_mask = False
 
     @property
@@ -155,9 +179,15 @@ class BaseModelPruner(ModelTrainer):
         :param name:
         :return:
         """
+        if self.logger:
+            self.logger.info("Remove pruning mask on module")
         if self.keep_mask:
+            if self.logger:
+                self.logger.warn("Keeping mask on module, move on...")
             return
         remove(module, name)
+        if self.logger:
+            self.logger.info("Pruning mask removed")
 
     # TODO add forward hooks for pruned model
 
@@ -194,13 +224,16 @@ class ModelPrunerSingle(BaseModelPruner):
             if module.bias is not None:
                 prune_tuples.append((module, "bias"))
 
-        print(f"Start global pruning on {len(kwargs.get('prune_layers', None))} layers")
-        global_unstructured(parameters=prune_tuples, pruning_method=l1_unstructured(), amount=kwargs['prune_percent'])
+        if self.logger:
+            self.logger.info(f"Start global pruning on {len(kwargs.get('prune_layers', None))} layers")
+        global_unstructured(parameters=prune_tuples, pruning_method=L1Unstructured, amount=kwargs['prune_percent'])
 
         for module, param in prune_tuples:
             self.remove_pruning_params(module, param)
-        print(f"Finished global pruning on {len(kwargs.get('prune_layers', None))} layers," \
-              f" removed {kwargs.get('prune_percent', None)}% of weights")
+        if self.logger:
+            self.logger.info(
+                f"Finished global pruning on {len(kwargs.get('prune_layers', None))} layers,"
+                f" removed {kwargs.get('prune_percent', None)}% of weights")
         return model
 
 
@@ -239,23 +272,28 @@ class ModelPrunerIncremental(BaseModelPruner):
             if module.bias is not None:
                 prune_tuples.append((module, "bias"))
 
-        print(
+        if self.logger:
+            self.logger.info(
             f"Start global pruning on {len(kwargs.get('prune_layers', None))} layers, starting on {kwargs.get('prune_percent', None)}% up to {kwargs.get('prune_limit', None)}")
 
         for prune_percent in range(kwargs.get('prune_percent', None), kwargs.get('prune_limit', None),
                                    kwargs.get('prune_step', None)):
 
             if pruning_no_improve > kwargs.get('prune_early_stop', None):
-                print(f"Early Stop finish pruning at {prune_percent}% with avg val acc: {best_acc}")
+                if self.logger:
+                    self.logger.warn(f"Early Stop finish pruning at {prune_percent}% with avg val acc: {best_acc}")
                 break
 
             model = super(ModelPrunerIncremental, self).train(**kwargs)
 
-            print(
-                f" ======== Start global pruning on {len(kwargs.get('prune_layers', None))} layers with {prune_percent}% pruning ========")
-            global_unstructured(parameters=prune_tuples, pruning_method=l1_unstructured, amount=prune_percent)
+            if self.logger:
+                self.logger.info(
+                    f" ======== Start global pruning on {len(kwargs.get('prune_layers', None))} layers with"
+                    f" {prune_percent}% pruning ========")
+            global_unstructured(parameters=prune_tuples, pruning_method=L1Unstructured, amount=prune_percent)
 
-            print(f"Start pruning validation process")
+            if self.logger:
+                self.logger.info(f"Start pruning validation process")
             current_val_loss, current_val_acc = self._val_evaluator.run(model=self.model, data_loader=self._val_dl)
             is_best = current_val_loss.avg > best_acc
             best_acc = max(best_acc, current_val_loss.avg)
@@ -267,8 +305,11 @@ class ModelPrunerIncremental(BaseModelPruner):
 
         for module, param in prune_tuples:
             self.remove_pruning_params(module, param)
-        print(f"Finished global pruning on {len(kwargs.get('prune_layers', None))} layers," \
-              f" removed {kwargs.get('prune_percent', None)}% to {kwargs.get('prune_limit', None)}% of weights iteratively")
+        if self.logger:
+            self.logger.info(
+                f"Finished global pruning on {len(kwargs.get('prune_layers', None))} layers," \
+                f" removed {kwargs.get('prune_percent', None)}% to {kwargs.get('prune_limit', None)}% of"
+                f" weights iteratively")
         return model
 
 
@@ -308,22 +349,29 @@ class ModelPrunerIterative(BaseModelPruner):
             if module.bias is not None:
                 prune_tuples.append((module, "bias"))
 
-        print(
-            f"Start global pruning on {len(kwargs.get('prune_layers', None))} layers, pruning {kwargs.get('prune_percent', None)}% up to {kwargs.get('num_pruning', None)} times")
+        if self.logger:
+            self.logger.info(
+                f"Start global pruning on {len(kwargs.get('prune_layers', None))} layers, pruning "
+                f"{kwargs.get('prune_percent', None)}% up to {kwargs.get('num_pruning', None)} times")
 
         for pruning_epoch in range(kwargs.get('num_pruning', None)):
 
             if pruning_no_improve > kwargs.get('prune_early_stop', None):
-                print(f"Early Stop finish pruning at {prune_percent}% with avg val acc: {best_acc}")
+                if self.logger:
+                    self.logger.warn(f"Early Stop finish pruning at {kwargs.get('prune_percent', None)}% "
+                                     f"with avg val acc: {best_acc}")
                 break
 
             model = super(ModelPrunerIterative, self).train(**kwargs)
 
-            print(
-                f" ======== Start global pruning on {len(kwargs.get('prune_layers', None))} layers with {kwargs['prune_percent']}% pruning ========")
-            global_unstructured(parameters=prune_tuples, pruning_method=l1_unstructured, amount=kwargs['prune_percent'])
+            if self.logger:
+                self.logger.info(
+                    f" ======== Start global pruning on {len(kwargs.get('prune_layers', None))} layers with "
+                    f"{kwargs['prune_percent']}% pruning ========")
+            global_unstructured(parameters=prune_tuples, pruning_method=L1Unstructured, amount=kwargs['prune_percent'])
 
-            print(f"Start pruning validation process")
+            if self.logger:
+                self.logger.info(f"Start pruning validation process")
             current_val_loss, current_val_acc = self._val_evaluator.run(model=self.model, data_loader=self._val_dl)
             is_best = current_val_loss.avg > best_acc
             best_acc = max(best_acc, current_val_loss.avg)
@@ -336,8 +384,11 @@ class ModelPrunerIterative(BaseModelPruner):
         for module, param in prune_tuples:
             self.remove_pruning_params(module, param)
             # TODO: Add pruning evaluation for metrics and graphs
-        print(f"Finished global pruning on {len(kwargs.get('prune_layers', None))} layers,"
-              f" removed {kwargs.get('prune_percent', None)}% to {kwargs.get('prune_limit', None)}% of weights iteratively")
+        if self.logger:
+            self.logger.info(
+                f"Finished global pruning on {len(kwargs.get('prune_layers', None))} layers,"
+                f" removed {kwargs.get('prune_percent', None)}% to {kwargs.get('prune_limit', None)}% "
+                f"of weights iteratively")
         return model
 
 

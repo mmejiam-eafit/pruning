@@ -4,16 +4,27 @@
 #  Repository: pruning (git clone git@github.com:mmejiam-eafit/pruning.git)
 #  Last Modified: 1/11/22, 10:51 AM by Miguel Mejía
 from os import path
-from typing import List
+from typing import List, Union
+from torch import Tensor
+from numpy import ndarray
+from abc import abstractmethod, ABC
+
 
 import matplotlib.pyplot as plt
 
 
-class StatsPlotter:
+class BasePlotter(ABC):
     def __init__(self, save_path: str):
         self._save_path = save_path
 
-    def plot_graph(self, data: List, **kwargs):
+    @abstractmethod
+    def plot(self, data: Union[ndarray, Tensor, List] , **kwargs):
+        raise NotImplementedError("Method needs to be implemented on child class")
+
+
+class StatsPlotter(BasePlotter):
+
+    def plot(self, data: List, **kwargs):
         if kwargs.get('x', None) is None:
             x = None
         else:
