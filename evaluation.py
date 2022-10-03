@@ -114,12 +114,12 @@ class TestEvaluator(_ModelLossEvaluator):
         predictions = None
 
         with torch.no_grad():
-            for i, (data_input, target) in enumerate(data_loader):
+            for batchId, (data_input, target) in enumerate(data_loader):
                 # Add a marker for batches run, as a rough estimate of where the model is looking at a given time
                 if kwargs.get('batch_marker', None) is not None:
                     if batchId % kwargs.get('batch_marker', None) == 0:
                         if self.logger:
-                            self.logger.info(f"Testing batch {i}")
+                            self.logger.info(f"Testing batch {batchId}")
                 data_input, target = data_input.cuda(), target.cuda()
 
                 if targets is None:

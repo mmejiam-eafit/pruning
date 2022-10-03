@@ -3,14 +3,13 @@
 #  Author: This Code has been developed by Miguel Mejía (mmejiam@eafit.edu.co)
 #  Repository: pruning (git clone git@github.com:mmejiam-eafit/pruning.git)
 #  Last Modified: 1/11/22, 10:51 AM by Miguel Mejía
-from os import path
-from typing import List, Union
-from torch import Tensor
-from numpy import ndarray
 from abc import abstractmethod, ABC
-
+from os import path, makedirs
+from typing import List, Union
 
 import matplotlib.pyplot as plt
+from numpy import ndarray
+from torch import Tensor
 
 
 class BasePlotter(ABC):
@@ -18,7 +17,7 @@ class BasePlotter(ABC):
         self._save_path = save_path
 
     @abstractmethod
-    def plot(self, data: Union[ndarray, Tensor, List] , **kwargs):
+    def plot(self, data: Union[ndarray, Tensor, List], **kwargs):
         raise NotImplementedError("Method needs to be implemented on child class")
 
 
@@ -53,6 +52,8 @@ class StatsPlotter(BasePlotter):
         if kwargs.get('save_graph', None) is not None and kwargs['save_graph']:
             name = kwargs.get('plot_name', None)
             plot_name = name if name is not None else ''
+            if not path.exists(self._save_path):
+                makedirs(self._save_path, exist_ok=True)
             plt.savefig(path.join(self._save_path, f"{kwargs.get('model_name', None)}{f'_{plot_name}'}_plot.png"))
 
         plt.show()

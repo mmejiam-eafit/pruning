@@ -1,21 +1,18 @@
-import time
 from os import path
 from random import seed as random_seed
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.nn.utils.prune import Identity, remove
 from torchmetrics import AUROC
+from torchsummary import summary
 
 from dataloader import DataloaderFactory
-from evaluation import TrainEvaluator, ValEvaluator, TestEvaluator
-from hooks import HookManager, get_propagated_info_generator_function
+from evaluation import TestEvaluator
+from hooks import HookManager
 from logger import logger
 from models import DenseNet121
-from training import ModelTrainer
-from utils import StatsPlotter
 
 RANDOM_SEED = 0
 CLASS_COUNT = 14
@@ -25,16 +22,14 @@ IMG_DIR = "./database"
 IMG_TRANS_CROP = 299
 IMG_TRANS_RESIZE = 320
 
-MODEL_NAME = f"chexnet_experiment__no_pruning_{time.strftime(TIME_FORMAT)}"
+EXPERIMENT_NAME = f"chexnet_experiment__iterative_pruning__s30__iter3__20221001_040054"
 BATCH_SIZE = 6
-NUM_EPOCHS = 10
-EPOCHS_EARLY_STOP = 3
 
 torch.manual_seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 random_seed(0)
-
 if __name__ == '__main__':
+
     model = DenseNet121(classCount=CLASS_COUNT, isTrained=False)
     model = nn.DataParallel(model).cuda()
 
@@ -110,74 +105,62 @@ if __name__ == '__main__':
 
     prune_layers = modules_d4 + modules_d3 + modules_d2 + modules_d1
 
+    prune_identity = Identity()
+
+    model_path = path.join("experiments", EXPERIMENT_NAME, f"{EXPERIMENT_NAME}.pth.tar")
+    for module in prune_layers:
+        prune_identity.apply(module, "weight")
+        if module.bias is not None:
+            prune_identity.apply((module, "bias"))
+    state_dict = torch.load(model_path)["state_dict"]
+
+    total_params = 0
+    for key, val in state_dict.items():
+        # total_params += (val.detach().cpu().abs() > 0).sum().item()
+        if "mask" in key:
+            total_params += (val.detach().cpu() - 1).abs().sum().item()
+    model.load_state_dict(state_dict)
+    print(f"Total params = 0 -> {total_params}")
     hook_manager = HookManager()
 
-    plotter = StatsPlotter(save_path="./plots")
+    for module in prune_layers:
+        remove(module, "weight")
+        if module.bias is not None:
+            remove((module, "bias"))
 
-    dataloader_factory = DataloaderFactory(batch_size=BATCH_SIZE, image_dir=IMG_DIR)
+    summary(model, input_size=(3, 224, 224))
 
-    loss = nn.BCELoss(reduction='sum')
-
+    model.eval()
     macro_auroc_evaluator = AUROC(num_classes=CLASS_COUNT, average='macro', pos_label=1)
     weighted_auroc_evaluator = AUROC(num_classes=CLASS_COUNT, average='weighted', pos_label=1)
 
-    optimizer = Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-5)
-    scheduler = ReduceLROnPlateau(optimizer, factor=0.1, patience=1, mode='min')
-
-    train_evaluator = TrainEvaluator(loss=loss)
-    val_evaluator = ValEvaluator(loss=loss)
-
     test_evaluator = TestEvaluator(metric=macro_auroc_evaluator)
-    params = {'loss': loss, 'num_epochs': NUM_EPOCHS, 'early_stop': EPOCHS_EARLY_STOP, 'optimizer': optimizer,
-              'scheduler': scheduler, 'batch_marker': 89, 'prune_percent': 30, 'prune_layers': prune_layers,
-              'prune_limit': 50, 'prune_step': 5, 'prune_early_stop': 5, 'num_pruning': 8}
-
+    test_evaluator.logger = logger
+    dataloader_factory = DataloaderFactory(batch_size=BATCH_SIZE, image_dir=IMG_DIR)
     transform_params = {'trans_crop': IMG_TRANS_CROP, 'trans_resize': IMG_TRANS_RESIZE}
 
-    trainer = ModelTrainer(
-        model=model,
-        model_name=f"{MODEL_NAME}.pth.tar",
-        train_dl=dataloader_factory.create(type="train", dataset_file=path.join(DATASET_DIR, "train_1.txt"),
-                                           **transform_params),
-        val_dl=dataloader_factory.create(type="val", dataset_file=path.join(DATASET_DIR, "val_1.txt"),
-                                         **transform_params),
-        train_evaluator=train_evaluator,
-        val_evaluator=val_evaluator,
-        image_dir=IMG_DIR
-    )
-
-    trainer.logger = logger
-    trainer.keep_mask = True
-
-    model = trainer.train(**params)
-
-    trainer.save_model(save_path=f"experiments/{MODEL_NAME}", optimizer=optimizer)
-
-    plotter.plot([trainer.accuracies['train'], trainer.accuracies['val']], label=['Train acc', 'Val acc'],
-                 legend=True, save_graph=True, plot_name='accuracies', model_name=MODEL_NAME)
-    plotter.plot([trainer.losses['train'], trainer.losses['val']], label=['Train loss', 'Val loss'], legend=True,
-                 save_graph=True, plot_name='losses', model_name=MODEL_NAME)
-
-    # TODO Hook manager works on mock training, try and use it on a real training run
     denseblocks = [
         ("denseblock1", model.module.densenet121.features.denseblock1),
         ("denseblock2", model.module.densenet121.features.denseblock2),
         ("denseblock3", model.module.densenet121.features.denseblock3),
         ("denseblock4", model.module.densenet121.features.denseblock4),
     ]
-    for name, layer in denseblocks:
-        hook_manager.addHook(module=layer, hook_name=f"hook_layer_{name}",
-                             fn=get_propagated_info_generator_function(
-                                 module_str=name,
-                                 image_dir=f"experiments/{MODEL_NAME}/activations",
-                                 images_per_batch=1
-                             ))
 
-    targets, predictions = test_evaluator.run(model, data_loader=dataloader_factory.create(type="test",
-                                                                                           dataset_file=path.join(
-                                                                                               DATASET_DIR,
-                                                                                               "test_1.txt"),
-                                                                                           **transform_params))
+    # for name, layer in denseblocks:
+    #     hook_manager.addHook(module=layer, hook_name=f"hook_layer_{name}",
+    #                          fn=get_propagated_info_generator_function(
+    #                              module_str=name,
+    #                              image_dir=f"tests/{EXPERIMENT_NAME}/activations",
+    #                              images_per_batch=1
+    #                          ))
+
+    targets, predictions = test_evaluator.run(model,
+                                              data_loader=dataloader_factory.create(type="test",
+                                                                                    dataset_file=path.join(
+                                                                                        DATASET_DIR,
+                                                                                        "test_1.txt"),
+                                                                                    **transform_params),
+                                              batch_marker=93)
     result = test_evaluator.get_evaluation(target=targets.int(), output=predictions)
     logger.info(f"MACRO AUROC = {result}")
     test_evaluator.metric = weighted_auroc_evaluator
