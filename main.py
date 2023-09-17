@@ -125,6 +125,7 @@ if __name__ == '__main__':
     scheduler = ReduceLROnPlateau(optimizer, factor=0.1, patience=1, mode='min')
 
     train_evaluator = TrainEvaluator(loss=loss)
+
     val_evaluator = ValEvaluator(loss=loss)
 
     test_evaluator = TestEvaluator(metric=macro_auroc_evaluator)

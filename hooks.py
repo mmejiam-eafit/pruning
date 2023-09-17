@@ -7,19 +7,18 @@ Links of Interest:
     https://medium.com/analytics-vidhya/pytorch-hooks-5909c7636fb
     https://web.stanford.edu/~nanbhas/blog/forward-hooks-pytorch/
 """
+import os
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from datetime import datetime
 from typing import Callable, Dict
 from uuid import uuid4
 
-import numpy as np
-import os
-from torch import Tensor
+from torch import Tensor, abs
 from torch.nn import Module
-from torch import sum as t_sum
 from torch.utils.hooks import RemovableHandle
 from torchvision.utils import save_image, make_grid
-from datetime import datetime
+
 
 def save_convolution_filters(module: Module, input: Tensor, output: Tensor):
     weights = module.weight.detach().cpu()
@@ -29,6 +28,26 @@ def save_convolution_filters(module: Module, input: Tensor, output: Tensor):
     tensor = weights.view(n * c, -1, w, h) if c == 3 else weights[:, c, :, :].unsqueeze(dim=1)
     weight_grid = make_grid(tensor, nrow=8, normalize=True, scale_each=True)
     save_image(weight_grid, fp=f"./weights_module_{int(time())}", format="png")
+
+
+def get_activation_mask_function_generator(module_str: str, image_dir: str):
+    uid = uuid4().hex
+    today = datetime.today().strftime("%Y%M%d_%H%m%S")
+    img_name = f"{module_str}_{uid}_input_{today}"
+    if not os.path.exists(image_dir):
+        os.makedirs(image_dir)
+
+    def get_activation_mask(module: Module, t_in: Tensor, t_out: Tensor):
+        weights = abs(module.weight.data.clone().detach().cpu())
+        n, c, h, w = weights.shape
+        if c == 3:
+            tensor = weights.view(n * c, -1, h, w)
+        else:
+            tensor = weights[:, 0, :, :].unsqueeze(dim=1)
+        grid = make_grid(tensor, nrow=16, normalize=True, scale_each=True)
+        save_image(grid, fp=os.path.join(image_dir, f"{img_name}.png"), format="png")
+
+    return get_activation_mask
 
 
 def get_activation_mask(module: Module, input: Tensor, output: Tensor):
